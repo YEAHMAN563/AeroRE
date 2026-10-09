@@ -11,9 +11,14 @@
       "features": ["docking-experimental", "dx11-binding", "win32-binding"],
       "platform": "windows"
     },
-    "pybind11",
     "sqlite3",
     "zydis"
-  ]
+  ],
+  "features": {
+    "python": {
+      "description": "Build the optional pybind11 automation module",
+      "dependencies": ["pybind11"]
+    }
+  }
 }
 

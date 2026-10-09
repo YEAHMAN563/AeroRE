@@ -54,6 +54,9 @@ module. To build only the engine and CLI:
 cmake --preset windows-x64 -DAERORE_BUILD_GUI=OFF -DAERORE_BUILD_PYTHON=OFF
 ```
 
+For a custom preset that enables Python, also set the vcpkg manifest feature
+`VCPKG_MANIFEST_FEATURES=python`; the provided Windows preset already does so.
+
 ## Commands
 
 ```text

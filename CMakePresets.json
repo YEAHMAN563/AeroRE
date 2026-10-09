@@ -13,18 +13,19 @@
         "AERORE_BUILD_GUI": "ON",
         "AERORE_BUILD_PYTHON": "ON",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/windows-x64",
+        "VCPKG_MANIFEST_FEATURES": "python",
         "VCPKG_TARGET_TRIPLET": "x64-windows"
       }
     },
     {
       "name": "linux-x64",
       "displayName": "Linux x64 (headless)",
-      "generator": "Ninja",
+      "generator": "Unix Makefiles",
       "binaryDir": "${sourceDir}/build/linux-x64",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "AERORE_BUILD_GUI": "OFF",
-        "AERORE_BUILD_PYTHON": "ON",
+        "AERORE_BUILD_PYTHON": "OFF",
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/linux-x64",
         "VCPKG_TARGET_TRIPLET": "x64-linux"
