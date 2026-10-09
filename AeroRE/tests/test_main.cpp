@@ -144,6 +144,9 @@ void test_analysis_and_db() {
     std::vector<u8> rdata = {'H', 'e', 'l', 'l', 'o', 0};
     auto file = build_pe(".text", text, 0x60000020, ".rdata", rdata, 0x40000040, 0x1000,
                          {{0x2100, 0x00007FFE00001000ull}});
+    const char* dbpath = "aerore-test.idb";
+    std::remove(dbpath);
+    {
     aerore::Session session;
     session.load_bytes(file, "sample.exe", false);
     auto m = session.model();
@@ -164,8 +167,6 @@ void test_analysis_and_db() {
         CHECK(f->name.rfind("sub_", 0) == 0);
     }
 
-    const char* dbpath = "/tmp/aerore-test.idb";
-    std::remove(dbpath);
     session.save_db(dbpath);
     aerore::Session again;
     again.open_db(dbpath);
@@ -189,6 +190,10 @@ void test_analysis_and_db() {
         threw = true;
     }
     CHECK(threw);
+    }
+    std::remove(dbpath);
+    std::remove("aerore-test.idb-shm");
+    std::remove("aerore-test.idb-wal");
 }
 
 void test_iat() {
@@ -237,13 +242,14 @@ void test_mcp() {
     aerore::McpServer mcp(session);
     std::string init = mcp.handle(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})");
     CHECK(init.find("aerore") != std::string::npos);
+    CHECK(init.find("2025-11-25") != std::string::npos);
     CHECK(init.find("\"id\":1") != std::string::npos);
     std::string tools = mcp.handle(R"({"jsonrpc":"2.0","id":2,"method":"tools/list"})");
     CHECK(tools.find("fix_iat") != std::string::npos);
     CHECK(tools.find("disassemble") != std::string::npos);
     std::vector<aerore::u8> text = {0xC3};
     auto file = build_pe(".text", text, 0x60000020, ".rdata", {'A', 'B', 'C', 'D', 0}, 0x40000040, 0x1000, {});
-    const char* path = "/tmp/aerore-mcp.exe";
+    const char* path = "aerore-mcp.exe";
     std::ofstream out(path, std::ios::binary);
     out.write(reinterpret_cast<const char*>(file.data()), static_cast<std::streamsize>(file.size()));
     out.close();
@@ -253,6 +259,7 @@ void test_mcp() {
     CHECK(call.find("functions") != std::string::npos);
     std::string fns = mcp.handle(R"({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_functions","arguments":{}}})");
     CHECK(fns.find("sub_") != std::string::npos || fns.find("140001000") != std::string::npos);
+    std::remove(path);
 }
 
 void test_themida_detect() {

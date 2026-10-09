@@ -3,3 +3,14 @@ node_modules/
 .github_repo
 .env
 .env.*
+.vs/
+build/
+build-manual/
+out/
+CMakeUserPresets.json
+*.user
+*.suo
+*.VC.db
+*.idb
+*.idb-*
+aerore-mcp.exe

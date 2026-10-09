@@ -39,7 +39,6 @@ u64 ru64(const u8* p) {
 }
 void wu16(u8* p, u16 v) { std::memcpy(p, &v, 2); }
 void wu32(u8* p, u32 v) { std::memcpy(p, &v, 4); }
-void wu64(u8* p, u64 v) { std::memcpy(p, &v, 8); }
 
 u64 align_up(u64 v, u64 a) {
     if (a == 0) return v;

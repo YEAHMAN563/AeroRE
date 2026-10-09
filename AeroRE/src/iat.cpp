@@ -278,7 +278,6 @@ IatReport fix_iat(PeImage& image, Decoder& decoder, const std::vector<ModuleSpan
     // name blob sits after descriptors + thunks
     if (!names.empty()) std::memcpy(sec.data() + desc_bytes + thunk_bytes, names.data(), names.size());
 
-    u64 sec_rva = 0;  // filled after add; thunks store RVAs so we patch them once RVA is known
     // We'll write thunks as offsets from section start, then add sec_rva after add_section... 
     // add_section returns RVA. Build relative then add.
     auto write_thunk = [&](size_t off, u64 value) {
@@ -315,7 +314,6 @@ IatReport fix_iat(PeImage& image, Decoder& decoder, const std::vector<ModuleSpan
         wu32(dpos + 16, static_cast<u32>(iat_off));
     }
 
-    constexpr u32 kExec = 0x20000000;
     constexpr u32 kRead = 0x40000000;
     constexpr u32 kWrite = 0x80000000;
     constexpr u32 kInit = 0x00000040;

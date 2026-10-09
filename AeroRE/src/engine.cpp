@@ -151,7 +151,7 @@ Function build_function(u64 start, const std::unordered_set<u64>& starts, const 
         bb.end = va;
         fn.blocks.push_back(std::move(bb));
     }
-    fn.end = body.rbegin()->first + body.rbegin()->second.len;
+    for (const auto& [va, in] : body) fn.end = std::max(fn.end, va + in.len);
 
     std::unordered_set<u64> bstarts;
     for (const auto& b : fn.blocks) bstarts.insert(b.start);
@@ -271,14 +271,11 @@ AnalysisStats analyze(const PeImage& image, Decoder& decoder, ProgramModel& out,
     std::vector<Chunk> chunks;
     for (const auto& s : image.sections()) {
         if (!s.executable || s.vsize == 0) continue;
-        u64 start = s.va;
-        u64 end = s.va + s.vsize;
-        const u64 span = 256 * 1024;
-        if (end - start <= span) {
-            chunks.push_back({start, end});
-        } else {
-            for (u64 a = start; a < end; a += span) chunks.push_back({a, std::min(end, a + span)});
-        }
+        // Section starts are valid decode boundaries. Arbitrary byte offsets are
+        // not: an instruction can straddle a fixed-size split and make the next
+        // worker start in its middle. Function-level jobs provide the second
+        // stage of parallelism once call targets are known.
+        chunks.push_back({s.va, s.va + s.vsize});
     }
     std::vector<SweepOut> parts(chunks.size());
     std::atomic<int> done{0};
@@ -391,10 +388,15 @@ AnalysisStats analyze(const PeImage& image, Decoder& decoder, ProgramModel& out,
     consider(image.entry_va());
     for (const auto& ex : image.exports()) consider(ex.va);
     for (u64 t : image.tls_callbacks()) consider(t);
+    std::vector<u64> call_targets;
+    call_targets.reserve(imap.size() / 8);
     for (const auto& kv : imap) {
         const Insn& in = kv.second;
-        if (in.flow == Flow::Call && in.target_valid) consider(in.target);
+        if (in.flow == Flow::Call && in.target_valid) call_targets.push_back(in.target);
     }
+    std::sort(call_targets.begin(), call_targets.end());
+    call_targets.erase(std::unique(call_targets.begin(), call_targets.end()), call_targets.end());
+    for (u64 target : call_targets) consider(target);
     // Prologue only when nothing falls through into it.
     std::unordered_set<u64> fall_into;
     for (const auto& kv : imap) fall_into.insert(kv.first + kv.second.len);

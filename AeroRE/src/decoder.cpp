@@ -192,7 +192,7 @@ std::optional<Insn> decode_builtin(Arch arch, u64 va, const u8* bytes, size_t n)
     size_t cap = std::min<size_t>(n, 15);
     Cur c{bytes, bytes, bytes + cap, true};
     bool is64 = arch == Arch::X64;
-    bool rex = false, rex_w = false, rex_r = false, rex_x = false, rex_b = false;
+    bool rex_w = false, rex_r = false, rex_x = false, rex_b = false;
     bool opsize16 = false, addr32 = false;
     for (int i = 0; i < 14 && c.ok; ++i) {
         if (c.p >= c.end) break;
@@ -200,24 +200,20 @@ std::optional<Insn> decode_builtin(Arch arch, u64 va, const u8* bytes, size_t n)
         if (b == 0xF0 || b == 0xF2 || b == 0xF3 || b == 0x2E || b == 0x36 || b == 0x3E || b == 0x26 ||
             b == 0x64 || b == 0x65) {
             c.p++;
-            rex = false;
             continue;
         }
         if (b == 0x66) {
             c.p++;
             opsize16 = true;
-            rex = false;
             continue;
         }
         if (b == 0x67) {
             c.p++;
             addr32 = true;
-            rex = false;
             continue;
         }
         if (is64 && b >= 0x40 && b <= 0x4F) {
             c.p++;
-            rex = true;
             rex_w = (b & 8) != 0;
             rex_r = (b & 4) != 0;
             rex_x = (b & 2) != 0;
@@ -758,6 +754,44 @@ Flow flow_from_zydis(ZydisMnemonic m, ZydisInstructionCategory cat) {
     return Flow::Next;
 }
 
+Reg register_from_zydis(ZydisRegister r) {
+    switch (r) {
+        case ZYDIS_REGISTER_AL: case ZYDIS_REGISTER_AX: case ZYDIS_REGISTER_EAX:
+        case ZYDIS_REGISTER_RAX: return Reg::Rax;
+        case ZYDIS_REGISTER_CL: case ZYDIS_REGISTER_CX: case ZYDIS_REGISTER_ECX:
+        case ZYDIS_REGISTER_RCX: return Reg::Rcx;
+        case ZYDIS_REGISTER_DL: case ZYDIS_REGISTER_DX: case ZYDIS_REGISTER_EDX:
+        case ZYDIS_REGISTER_RDX: return Reg::Rdx;
+        case ZYDIS_REGISTER_BL: case ZYDIS_REGISTER_BX: case ZYDIS_REGISTER_EBX:
+        case ZYDIS_REGISTER_RBX: return Reg::Rbx;
+        case ZYDIS_REGISTER_SPL: case ZYDIS_REGISTER_SP: case ZYDIS_REGISTER_ESP:
+        case ZYDIS_REGISTER_RSP: return Reg::Rsp;
+        case ZYDIS_REGISTER_BPL: case ZYDIS_REGISTER_BP: case ZYDIS_REGISTER_EBP:
+        case ZYDIS_REGISTER_RBP: return Reg::Rbp;
+        case ZYDIS_REGISTER_SIL: case ZYDIS_REGISTER_SI: case ZYDIS_REGISTER_ESI:
+        case ZYDIS_REGISTER_RSI: return Reg::Rsi;
+        case ZYDIS_REGISTER_DIL: case ZYDIS_REGISTER_DI: case ZYDIS_REGISTER_EDI:
+        case ZYDIS_REGISTER_RDI: return Reg::Rdi;
+        case ZYDIS_REGISTER_R8B: case ZYDIS_REGISTER_R8W: case ZYDIS_REGISTER_R8D:
+        case ZYDIS_REGISTER_R8: return Reg::R8;
+        case ZYDIS_REGISTER_R9B: case ZYDIS_REGISTER_R9W: case ZYDIS_REGISTER_R9D:
+        case ZYDIS_REGISTER_R9: return Reg::R9;
+        case ZYDIS_REGISTER_R10B: case ZYDIS_REGISTER_R10W: case ZYDIS_REGISTER_R10D:
+        case ZYDIS_REGISTER_R10: return Reg::R10;
+        case ZYDIS_REGISTER_R11B: case ZYDIS_REGISTER_R11W: case ZYDIS_REGISTER_R11D:
+        case ZYDIS_REGISTER_R11: return Reg::R11;
+        case ZYDIS_REGISTER_R12B: case ZYDIS_REGISTER_R12W: case ZYDIS_REGISTER_R12D:
+        case ZYDIS_REGISTER_R12: return Reg::R12;
+        case ZYDIS_REGISTER_R13B: case ZYDIS_REGISTER_R13W: case ZYDIS_REGISTER_R13D:
+        case ZYDIS_REGISTER_R13: return Reg::R13;
+        case ZYDIS_REGISTER_R14B: case ZYDIS_REGISTER_R14W: case ZYDIS_REGISTER_R14D:
+        case ZYDIS_REGISTER_R14: return Reg::R14;
+        case ZYDIS_REGISTER_R15B: case ZYDIS_REGISTER_R15W: case ZYDIS_REGISTER_R15D:
+        case ZYDIS_REGISTER_R15: return Reg::R15;
+        default: return Reg::None;
+    }
+}
+
 std::optional<Insn> decode_zydis(const ZydisDecoder& dec, const ZydisFormatter& fmt, u64 va, const u8* bytes,
                                  size_t n) {
     ZydisDecodedInstruction zi;
@@ -793,44 +827,7 @@ std::optional<Insn> decode_zydis(const ZydisDecoder& dec, const ZydisFormatter& 
                 dst.width = 4;
             else
                 dst.width = 8;
-            auto map = [](ZydisRegister r) -> Reg {
-                switch (r) {
-                    case ZYDIS_REGISTER_AL: case ZYDIS_REGISTER_AX: case ZYDIS_REGISTER_EAX:
-                    case ZYDIS_REGISTER_RAX: return Reg::Rax;
-                    case ZYDIS_REGISTER_CL: case ZYDIS_REGISTER_CX: case ZYDIS_REGISTER_ECX:
-                    case ZYDIS_REGISTER_RCX: return Reg::Rcx;
-                    case ZYDIS_REGISTER_DL: case ZYDIS_REGISTER_DX: case ZYDIS_REGISTER_EDX:
-                    case ZYDIS_REGISTER_RDX: return Reg::Rdx;
-                    case ZYDIS_REGISTER_BL: case ZYDIS_REGISTER_BX: case ZYDIS_REGISTER_EBX:
-                    case ZYDIS_REGISTER_RBX: return Reg::Rbx;
-                    case ZYDIS_REGISTER_SPL: case ZYDIS_REGISTER_SP: case ZYDIS_REGISTER_ESP:
-                    case ZYDIS_REGISTER_RSP: return Reg::Rsp;
-                    case ZYDIS_REGISTER_BPL: case ZYDIS_REGISTER_BP: case ZYDIS_REGISTER_EBP:
-                    case ZYDIS_REGISTER_RBP: return Reg::Rbp;
-                    case ZYDIS_REGISTER_SIL: case ZYDIS_REGISTER_SI: case ZYDIS_REGISTER_ESI:
-                    case ZYDIS_REGISTER_RSI: return Reg::Rsi;
-                    case ZYDIS_REGISTER_DIL: case ZYDIS_REGISTER_DI: case ZYDIS_REGISTER_EDI:
-                    case ZYDIS_REGISTER_RDI: return Reg::Rdi;
-                    case ZYDIS_REGISTER_R8B: case ZYDIS_REGISTER_R8W: case ZYDIS_REGISTER_R8D:
-                    case ZYDIS_REGISTER_R8: return Reg::R8;
-                    case ZYDIS_REGISTER_R9B: case ZYDIS_REGISTER_R9W: case ZYDIS_REGISTER_R9D:
-                    case ZYDIS_REGISTER_R9: return Reg::R9;
-                    case ZYDIS_REGISTER_R10B: case ZYDIS_REGISTER_R10W: case ZYDIS_REGISTER_R10D:
-                    case ZYDIS_REGISTER_R10: return Reg::R10;
-                    case ZYDIS_REGISTER_R11B: case ZYDIS_REGISTER_R11W: case ZYDIS_REGISTER_R11D:
-                    case ZYDIS_REGISTER_R11: return Reg::R11;
-                    case ZYDIS_REGISTER_R12B: case ZYDIS_REGISTER_R12W: case ZYDIS_REGISTER_R12D:
-                    case ZYDIS_REGISTER_R12: return Reg::R12;
-                    case ZYDIS_REGISTER_R13B: case ZYDIS_REGISTER_R13W: case ZYDIS_REGISTER_R13D:
-                    case ZYDIS_REGISTER_R13: return Reg::R13;
-                    case ZYDIS_REGISTER_R14B: case ZYDIS_REGISTER_R14W: case ZYDIS_REGISTER_R14D:
-                    case ZYDIS_REGISTER_R14: return Reg::R14;
-                    case ZYDIS_REGISTER_R15B: case ZYDIS_REGISTER_R15W: case ZYDIS_REGISTER_R15D:
-                    case ZYDIS_REGISTER_R15: return Reg::R15;
-                    default: return Reg::None;
-                }
-            };
-            dst.reg = map(op.reg.value);
+            dst.reg = register_from_zydis(op.reg.value);
             if (dst.reg == Reg::None && op.reg.value != ZYDIS_REGISTER_NONE) {
                 // keep slot only for GPRs the emulator understands
                 continue;
@@ -853,7 +850,9 @@ std::optional<Insn> decode_zydis(const ZydisDecoder& dec, const ZydisFormatter& 
         } else if (op.type == ZYDIS_OPERAND_TYPE_MEMORY) {
             dst.kind = Operand::Mem;
             dst.width = std::max(1, static_cast<int>(op.size / 8));
-            dst.mem.base = Reg::None;
+            dst.mem.base = register_from_zydis(op.mem.base);
+            dst.mem.index = register_from_zydis(op.mem.index);
+            dst.mem.scale = op.mem.scale ? op.mem.scale : 1;
             dst.mem.rip_relative = op.mem.base == ZYDIS_REGISTER_RIP || op.mem.base == ZYDIS_REGISTER_EIP;
             dst.mem.disp = op.mem.disp.value;
             if (dst.mem.rip_relative) {
@@ -865,6 +864,10 @@ std::optional<Insn> decode_zydis(const ZydisDecoder& dec, const ZydisFormatter& 
             if (in.flow == Flow::Call || in.flow == Flow::Jmp) in.target_is_mem = true;
             in.op_count++;
         }
+    }
+    if (zi.raw.disp.size == 32) {
+        in.has_disp32 = true;
+        in.disp_off = zi.raw.disp.offset;
     }
     if (in.text[0] == 0) std::snprintf(in.text, sizeof(in.text), "%s", in.mnemonic);
     return in;

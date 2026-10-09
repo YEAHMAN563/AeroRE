@@ -1,0 +1,49 @@
+name: native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bootstrap vcpkg
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" checkout 0699a19d0c6386247ce50d4dedbb8217d484d536
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
+          else
+            "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          fi
+
+      - name: Configure, build, and test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:VCPKG_ROOT = "$env:RUNNER_TEMP/vcpkg"
+          cmake --preset windows-x64
+          cmake --build --preset windows-x64-release
+          ctest --preset windows-x64-release
+
+      - name: Configure, build, and test (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          export VCPKG_ROOT="$RUNNER_TEMP/vcpkg"
+          cmake --preset linux-x64
+          cmake --build --preset linux-x64-release
+          ctest --preset linux-x64-release
+

@@ -1,12 +1,13 @@
 #pragma once
 
+#include "aerore/json.hpp"
 #include "aerore/session.hpp"
 
 namespace aerore {
 
-// Model Context Protocol server (JSON-RPC 2.0). stdio uses LSP-style
-// Content-Length framing. handle() accepts one JSON-RPC object and is what
-// tests call directly.
+// Model Context Protocol server (JSON-RPC 2.0). Current stdio messages are
+// newline-delimited JSON; the reader also accepts legacy Content-Length frames.
+// handle() accepts one JSON-RPC object and is what tests call directly.
 class McpServer {
 public:
     explicit McpServer(Session& session);

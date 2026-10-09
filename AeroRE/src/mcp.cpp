@@ -63,15 +63,10 @@ Json bool_prop() {
     return j;
 }
 
-std::string text_content(const std::string& text) {
-    Json root = Json::object();
-    Json content = Json::array();
-    Json item = Json::object();
-    item.set("type", Json::string("text"));
-    item.set("text", Json::string(text));
-    content.arr.push_back(std::move(item));
-    root.set("content", std::move(content));
-    return root.dump();
+Json array_prop() {
+    Json j = Json::object();
+    j.set("type", Json::string("array"));
+    return j;
 }
 
 }  // namespace
@@ -99,11 +94,11 @@ Json McpServer::tools_list() const {
     tools.arr.push_back(tool("set_comment", "Comment an address.",
                              obj_schema({{"va", str_prop()}, {"comment", str_prop()}}, {"va", "comment"})));
     tools.arr.push_back(tool("define_struct", "Declare a struct type.",
-                             obj_schema({{"name", str_prop()}, {"members", Json::object()}}, {"name"})));
+                             obj_schema({{"name", str_prop()}, {"members", array_prop()}}, {"name"})));
     tools.arr.push_back(tool("detect_packers", "Score unpacker plugins.", obj_schema({}, {})));
     tools.arr.push_back(tool("unpack", "Run the highest-scoring unpacker.", obj_schema({}, {})));
     tools.arr.push_back(tool("fix_iat", "Resolve and optionally rebuild the import table.",
-                             obj_schema({{"patch", bool_prop()}, {"modules", Json::object()}}, {})));
+                             obj_schema({{"patch", bool_prop()}, {"modules", array_prop()}}, {})));
     tools.arr.push_back(tool("query", "Read-only SQL against the IDB.", obj_schema({{"sql", str_prop()}}, {"sql"})));
     Json result = Json::object();
     result.set("tools", std::move(tools));
@@ -374,13 +369,13 @@ std::string McpServer::handle(const std::string& message) {
         const Json& p = params ? *params : empty;
         if (method == "initialize") {
             Json result = Json::object();
-            result.set("protocolVersion", Json::string("2024-11-05"));
+            result.set("protocolVersion", Json::string("2025-11-25"));
             Json caps = Json::object();
             caps.set("tools", Json::object());
             result.set("capabilities", std::move(caps));
             Json info = Json::object();
             info.set("name", Json::string("aerore"));
-            info.set("version", Json::string("0.1.0"));
+            info.set("version", Json::string("0.2.0"));
             result.set("serverInfo", std::move(info));
             return rpc_ok(id, std::move(result)).dump();
         }
@@ -423,67 +418,27 @@ std::string McpServer::handle(const std::string& message) {
 
 void McpServer::serve_stdio() {
     std::ios::sync_with_stdio(false);
-    std::string acc;
-    char buf[4096];
-    while (std::cin) {
-        std::cin.read(buf, sizeof(buf));
-        auto n = std::cin.gcount();
-        if (n > 0) acc.append(buf, static_cast<size_t>(n));
-        if (n <= 0 && acc.empty()) break;
-        while (!acc.empty()) {
-            size_t i = 0;
-            while (i < acc.size() && std::isspace(static_cast<unsigned char>(acc[i]))) ++i;
-            if (i) acc.erase(0, i);
-            if (acc.empty()) break;
-            if (acc[0] == '{') {
-                int depth = 0;
-                bool in_str = false, esc = false, found = false;
-                size_t end = 0;
-                for (size_t k = 0; k < acc.size(); ++k) {
-                    char c = acc[k];
-                    if (in_str) {
-                        if (esc) esc = false;
-                        else if (c == '\\') esc = true;
-                        else if (c == '"') in_str = false;
-                        continue;
-                    }
-                    if (c == '"') {
-                        in_str = true;
-                        continue;
-                    }
-                    if (c == '{') ++depth;
-                    else if (c == '}') {
-                        if (--depth == 0) {
-                            end = k + 1;
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                if (!found) break;
-                std::string resp = handle(acc.substr(0, end));
-                acc.erase(0, end);
-                if (!resp.empty())
-                    std::cout << "Content-Length: " << resp.size() << "\r\n\r\n" << resp << std::flush;
-            } else {
-                auto hdr_end = acc.find("\r\n\r\n");
-                if (hdr_end == std::string::npos) break;
-                std::string headers = acc.substr(0, hdr_end);
-                auto key = headers.find("Content-Length:");
-                if (key == std::string::npos) {
-                    acc.erase(0, hdr_end + 4);
-                    continue;
-                }
-                int len = std::atoi(headers.c_str() + key + 15);
-                size_t body = hdr_end + 4;
-                if (acc.size() < body + static_cast<size_t>(len)) break;
-                std::string resp = handle(acc.substr(body, static_cast<size_t>(len)));
-                acc.erase(0, body + static_cast<size_t>(len));
-                if (!resp.empty())
-                    std::cout << "Content-Length: " << resp.size() << "\r\n\r\n" << resp << std::flush;
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+
+        if (line.rfind("Content-Length:", 0) == 0) {
+            size_t length = static_cast<size_t>(std::strtoull(line.c_str() + 15, nullptr, 10));
+            while (std::getline(std::cin, line)) {
+                if (line == "\r" || line.empty()) break;
             }
+            std::string body(length, '\0');
+            std::cin.read(body.data(), static_cast<std::streamsize>(length));
+            if (static_cast<size_t>(std::cin.gcount()) != length) break;
+            std::string response = handle(body);
+            if (!response.empty())
+                std::cout << "Content-Length: " << response.size() << "\r\n\r\n" << response << std::flush;
+            continue;
         }
-        if (n <= 0) break;
+
+        std::string response = handle(line);
+        if (!response.empty()) std::cout << response << '\n' << std::flush;
     }
 }
 

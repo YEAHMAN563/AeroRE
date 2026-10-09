@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "aerore",
+  "version-semver": "0.2.0",
+  "description": "Native Windows x86/x64 static and dynamic analysis workbench",
+  "license": "MIT",
+  "builtin-baseline": "0699a19d0c6386247ce50d4dedbb8217d484d536",
+  "dependencies": [
+    {
+      "name": "imgui",
+      "features": ["docking-experimental", "dx11-binding", "win32-binding"],
+      "platform": "windows"
+    },
+    "pybind11",
+    "sqlite3",
+    "zydis"
+  ]
+}
+
