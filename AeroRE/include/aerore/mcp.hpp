@@ -21,4 +21,28 @@ private:
     Session& session_;
 };
 
+// Optional localhost transport used by the GUI. The stdio server remains the
+// recommended automation transport; TCP binds only to 127.0.0.1 and uses the
+// same newline-delimited JSON-RPC framing.
+class McpTcpServer {
+public:
+    explicit McpTcpServer(Session& session);
+    ~McpTcpServer();
+    McpTcpServer(const McpTcpServer&) = delete;
+    McpTcpServer& operator=(const McpTcpServer&) = delete;
+
+    bool start(u16 preferred_port = 37091);
+    // Execute queued requests on the owning UI thread. This keeps Session's
+    // mutable PE/database state single-threaded while socket I/O stays async.
+    void pump();
+    void stop();
+    bool running() const;
+    u16 port() const;
+    std::string status() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 }  // namespace aerore

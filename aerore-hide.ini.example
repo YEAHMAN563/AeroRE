@@ -1,0 +1,12 @@
+[anti_anti_debug]
+enabled=true
+patch_peb=true
+patch_heap=true
+hook_debug_apis=true
+hook_nt_query_system=true
+block_thread_hide_calls=true
+hide_new_threads=false
+sanitize_debug_registers=false
+neutralize_output_debug_string=true
+neutralize_invalid_handle=true
+restore_on_detach=true

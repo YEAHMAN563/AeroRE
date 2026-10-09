@@ -3,6 +3,7 @@
 #include "aerore/types.hpp"
 
 #include <optional>
+#include <utility>
 
 namespace aerore {
 
@@ -39,6 +40,7 @@ public:
     u32 size_of_image() const { return size_of_image_; }
     u32 section_align() const { return section_align_; }
     u32 file_align() const { return file_align_; }
+    u32 size_of_headers() const { return size_of_headers_; }
     u16 subsystem() const { return subsystem_; }
     u16 machine() const { return machine_; }
     const std::string& path_hint() const { return path_hint_; }
@@ -53,6 +55,9 @@ public:
     const std::vector<ResourceNode>& resources() const { return resources_; }
     std::vector<u8> overlay() const { return overlay_; }
     const std::vector<u8>& mapped() const { return mapped_; }
+    const std::vector<u8>& file_bytes() const { return file_; }
+
+    std::pair<u32, u32> data_directory(int index) const;
 
     bool executable_rva(u64 rva) const;
     bool contains_rva(u64 rva) const { return rva < mapped_.size(); }

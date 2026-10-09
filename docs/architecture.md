@@ -17,12 +17,14 @@ sorts and resolves those facts before SQLite or the UI can observe them.
 | `pool` | Per-worker queues with work stealing | Jobs do not own global analysis state |
 | `model` | Stable program snapshot and bidirectional lookup | Published atomically through `Session` |
 | `database` | SQLite IDB, schema migration, annotations, netnodes, read-only query gate | Serialized commit after analysis |
-| `debugger` | Windows debug loop, breakpoints, registers, memory and module snapshots | Dedicated debug-event thread |
+| `debugger` | Windows debug loop, breakpoints, registers, memory and module snapshots | Nonblocking event pump after the initial attach stop |
+| `anti_debug` | Reversible PEB/heap/IAT concealment and exception filtering | Attach/module/thread/continue lifecycle |
 | `emu` | Bounded concrete execution for straight-line protector stubs | No host execution of target code |
 | `unpack` | `IUnpacker` registry, scoring, trace/OEP handoff | Returns rebuilt bytes and provenance |
 | `iat` | Export reverse-map, trampoline resolution, import report/rebuild | Works on image/module snapshots |
+| `exports` | Export directory validation/rebuild from preserved symbols | Runs only behind the post-unpack safety gate |
 | `session` | Orchestration and snapshot lifetime | API used by UI, CLI, Python, MCP |
-| `mcp` | Local JSON-RPC tool facade | Stdio; no network listener |
+| `mcp` | Local JSON-RPC tool facade | Stdio plus GUI-owned loopback-only TCP listener |
 | `ui` | Dear ImGui docking frontend | Consumes snapshots and progress events |
 
 ## Data flow and threads
@@ -63,9 +65,20 @@ form the function seed set. Function jobs then recurse over the canonical
 instruction map. Results are sorted again before a `ProgramModel` snapshot is
 published.
 
-The debugger has its own Win32 event loop. Live memory and module lists become
-explicit snapshots before they enter analysis or IAT reconstruction. The UI
-never calls `WaitForDebugEvent` and workers never call rendering APIs.
+The debugger holds the initial attach event so concealment can be installed
+before target code continues. After that stop, resume/step operations return
+immediately and the UI drives a zero-timeout Win32 event pump once per frame.
+Live memory and module lists become explicit snapshots before they enter
+analysis or IAT reconstruction, and workers never call rendering APIs.
+
+The optional anti-anti-debug layer is documented in
+[anti-anti-debug.md](anti-anti-debug.md). Its defaults patch reversible PEB,
+heap, and imported API observations while leaving irreversible thread hiding
+and DR-register sanitization off until explicitly enabled.
+
+The TCP listener performs socket I/O on its worker, then queues each request
+back to the UI thread before touching `Session`. This prevents MCP mutations
+from racing the PE image, SQLite handle, or live views.
 
 ## Analysis invariants
 
@@ -95,11 +108,21 @@ statement and rejects mutation, which is the surface exposed through MCP.
 return an `UnpackResult` containing rebuilt bytes, OEP, confidence, log, and
 lifted effects. Packer-specific logic stays outside the PE loader and analyzer.
 
-The built-in tracer is deliberately bounded. It interprets a useful subset of
+The VMProtect plugin first reconstructs virtual-only sections from bounded raw
+LZMA blocks. It supports both legacy plaintext `PACKER_INFO` entries and the
+3.9+ destination-XOR table whose key rotates left seven bits per entry. The
+rebuilt virtual image is then passed to the bounded tracer. It interprets a useful subset of
 x86/x64 arithmetic, memory, stack, and control flow, recognizes a handoff from
 a protector section to a clean executable section, patches the OEP, and feeds
 the new image back through normal analysis. General VM handler discovery and
 devirtualization require the micro-IR milestone described in the roadmap.
+
+After reconstruction, entry-section entropy, remaining virtual-only sections,
+decode validity, VM-style arithmetic density, and indirect control-flow density
+produce separate virtualization and obfuscation scores. Automatic IAT and
+export rewriting is allowed only when both scores pass the conservative gate.
+Blocked images remain analyzable and the reasons are exposed to the UI, CLI,
+and MCP logs.
 
 ## IAT reconstruction
 

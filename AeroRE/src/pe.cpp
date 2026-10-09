@@ -70,6 +70,13 @@ u32 PeImage::opt_offset() const { return e_lfanew_ + 4 + 20; }
 
 u32 PeImage::dd_offset() const { return opt_offset() + (is64_ ? 112u : 96u); }
 
+std::pair<u32, u32> PeImage::data_directory(int index) const {
+    if (index < 0 || index >= num_dd_) return {0, 0};
+    u32 off = dd_offset() + static_cast<u32>(index) * 8;
+    if (off + 8 > file_.size()) return {0, 0};
+    return {ru32(file_.data() + off), ru32(file_.data() + off + 4)};
+}
+
 PeImage PeImage::parse(std::vector<u8> file) {
     if (file.size() < 0x40) throw std::runtime_error("file too small for DOS header");
     if (file[0] != 'M' || file[1] != 'Z') throw std::runtime_error("missing MZ signature");

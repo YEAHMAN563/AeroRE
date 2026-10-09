@@ -1,9 +1,22 @@
 #include "aerore/mcp.hpp"
 
+#include <array>
+#include <atomic>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
+#include <deque>
 #include <iostream>
+#include <mutex>
 #include <sstream>
+#include <thread>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
 
 namespace aerore {
 namespace {
@@ -99,6 +112,10 @@ Json McpServer::tools_list() const {
     tools.arr.push_back(tool("unpack", "Run the highest-scoring unpacker.", obj_schema({}, {})));
     tools.arr.push_back(tool("fix_iat", "Resolve and optionally rebuild the import table.",
                              obj_schema({{"patch", bool_prop()}, {"modules", array_prop()}}, {})));
+    tools.arr.push_back(tool("fix_exports", "Validate or rebuild exports preserved across unpacking.",
+                             obj_schema({{"patch", bool_prop()}}, {})));
+    tools.arr.push_back(tool("export_symbols_json", "Write imports and exports to one reusable JSON file.",
+                             obj_schema({{"path", str_prop()}}, {"path"})));
     tools.arr.push_back(tool("query", "Read-only SQL against the IDB.", obj_schema({{"sql", str_prop()}}, {"sql"})));
     Json result = Json::object();
     result.set("tools", std::move(tools));
@@ -323,8 +340,25 @@ Json McpServer::call_tool(const std::string& name, const Json& args) {
         o.set("ok", Json::boolean(r.ok));
         o.set("packer", Json::string(r.packer));
         o.set("oep", Json::string(hex(r.oep_rva)));
+        o.set("static_unpack", Json::boolean(r.static_unpack));
+        o.set("decompressed_blocks", Json::number_u64(r.decompressed_blocks));
+        o.set("virtualized", Json::boolean(r.assessment.virtualized));
+        o.set("obfuscated", Json::boolean(r.assessment.obfuscated));
         o.set("log", Json::string(r.log));
         return Json::string(o.dump());
+    }
+    if (name == "fix_exports") {
+        ExportFixReport r = session_.fix_exports({}, args.get_bool("patch", false));
+        Json o = Json::object();
+        o.set("patched", Json::boolean(r.patched));
+        o.set("skipped", Json::boolean(r.skipped));
+        o.set("message", Json::string(r.message));
+        o.set("entries", Json::number_u64(r.entries.size()));
+        return Json::string(o.dump());
+    }
+    if (name == "export_symbols_json") {
+        session_.export_symbols_json(args.get_str("path"));
+        return Json::string("exported");
     }
     if (name == "fix_iat") {
         std::vector<ModuleSpan> mods;
@@ -375,7 +409,7 @@ std::string McpServer::handle(const std::string& message) {
             result.set("capabilities", std::move(caps));
             Json info = Json::object();
             info.set("name", Json::string("aerore"));
-            info.set("version", Json::string("0.2.0"));
+            info.set("version", Json::string("0.3.0"));
             result.set("serverInfo", std::move(info));
             return rpc_ok(id, std::move(result)).dump();
         }
@@ -440,6 +474,176 @@ void McpServer::serve_stdio() {
         std::string response = handle(line);
         if (!response.empty()) std::cout << response << '\n' << std::flush;
     }
+}
+
+struct McpTcpServer::Impl {
+    struct PendingRequest {
+        std::string request;
+        std::string response;
+        bool done = false;
+        std::mutex mutex;
+        std::condition_variable ready;
+    };
+
+    explicit Impl(Session& value) : session(value) {}
+    Session& session;
+    std::atomic<bool> live{false};
+    u16 bound_port = 0;
+    std::string state = "stopped";
+    mutable std::mutex state_mutex;
+    std::mutex queue_mutex;
+    std::deque<std::shared_ptr<PendingRequest>> requests;
+    std::thread worker;
+#if defined(_WIN32)
+    SOCKET listener = INVALID_SOCKET;
+#endif
+
+    void set_state(std::string value) {
+        std::lock_guard lock(state_mutex);
+        state = std::move(value);
+    }
+};
+
+McpTcpServer::McpTcpServer(Session& session) : impl_(std::make_unique<Impl>(session)) {}
+McpTcpServer::~McpTcpServer() { stop(); }
+
+bool McpTcpServer::start(u16 preferred_port) {
+#if !defined(_WIN32)
+    (void)preferred_port;
+    impl_->set_state("TCP MCP transport requires Windows");
+    return false;
+#else
+    if (impl_->live) return true;
+    WSADATA winsock{};
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
+        impl_->set_state("WSAStartup failed");
+        return false;
+    }
+    impl_->listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (impl_->listener == INVALID_SOCKET) {
+        impl_->set_state("MCP socket creation failed");
+        WSACleanup();
+        return false;
+    }
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(preferred_port);
+    if (bind(impl_->listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
+        address.sin_port = 0;
+        if (bind(impl_->listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
+            closesocket(impl_->listener);
+            impl_->listener = INVALID_SOCKET;
+            impl_->set_state("MCP bind failed");
+            WSACleanup();
+            return false;
+        }
+    }
+    if (listen(impl_->listener, 4) == SOCKET_ERROR) {
+        closesocket(impl_->listener);
+        impl_->listener = INVALID_SOCKET;
+        impl_->set_state("MCP listen failed");
+        WSACleanup();
+        return false;
+    }
+    int address_size = sizeof(address);
+    getsockname(impl_->listener, reinterpret_cast<sockaddr*>(&address), &address_size);
+    impl_->bound_port = ntohs(address.sin_port);
+    impl_->live = true;
+    impl_->set_state("listening on 127.0.0.1:" + std::to_string(impl_->bound_port));
+    impl_->worker = std::thread([this] {
+        while (impl_->live) {
+            SOCKET client = accept(impl_->listener, nullptr, nullptr);
+            if (client == INVALID_SOCKET) break;
+            DWORD timeout_ms = 500;
+            setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
+                       reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+            std::string pending;
+            std::array<char, 4096> chunk{};
+            while (impl_->live) {
+                int count = recv(client, chunk.data(), static_cast<int>(chunk.size()), 0);
+                if (count == SOCKET_ERROR && WSAGetLastError() == WSAETIMEDOUT) continue;
+                if (count <= 0) break;
+                pending.append(chunk.data(), static_cast<size_t>(count));
+                if (pending.size() > 16 * 1024 * 1024) break;
+                for (;;) {
+                    size_t newline = pending.find('\n');
+                    if (newline == std::string::npos) break;
+                    std::string request = pending.substr(0, newline);
+                    pending.erase(0, newline + 1);
+                    if (!request.empty() && request.back() == '\r') request.pop_back();
+                    if (request.empty()) continue;
+                    auto pending_request = std::make_shared<Impl::PendingRequest>();
+                    pending_request->request = std::move(request);
+                    {
+                        std::lock_guard lock(impl_->queue_mutex);
+                        impl_->requests.push_back(pending_request);
+                    }
+                    std::unique_lock wait_lock(pending_request->mutex);
+                    while (impl_->live && !pending_request->done) {
+                        pending_request->ready.wait_for(wait_lock, std::chrono::milliseconds(250));
+                    }
+                    if (!pending_request->done) break;
+                    std::string response = std::move(pending_request->response);
+                    size_t sent = 0;
+                    while (sent < response.size()) {
+                        int wrote = send(client, response.data() + sent,
+                                         static_cast<int>(response.size() - sent), 0);
+                        if (wrote <= 0) break;
+                        sent += static_cast<size_t>(wrote);
+                    }
+                }
+            }
+            shutdown(client, SD_BOTH);
+            closesocket(client);
+        }
+    });
+    return true;
+#endif
+}
+
+void McpTcpServer::pump() {
+    std::deque<std::shared_ptr<Impl::PendingRequest>> requests;
+    {
+        std::lock_guard lock(impl_->queue_mutex);
+        requests.swap(impl_->requests);
+    }
+    McpServer server(impl_->session);
+    for (const auto& request : requests) {
+        std::string response = server.handle(request->request) + "\n";
+        {
+            std::lock_guard lock(request->mutex);
+            request->response = std::move(response);
+            request->done = true;
+        }
+        request->ready.notify_one();
+    }
+}
+
+void McpTcpServer::stop() {
+#if defined(_WIN32)
+    if (!impl_->live.exchange(false)) return;
+    if (impl_->listener != INVALID_SOCKET) {
+        shutdown(impl_->listener, SD_BOTH);
+        closesocket(impl_->listener);
+        impl_->listener = INVALID_SOCKET;
+    }
+    {
+        std::lock_guard lock(impl_->queue_mutex);
+        for (const auto& request : impl_->requests) request->ready.notify_one();
+    }
+    if (impl_->worker.joinable()) impl_->worker.join();
+    impl_->bound_port = 0;
+    impl_->set_state("stopped");
+    WSACleanup();
+#endif
+}
+
+bool McpTcpServer::running() const { return impl_->live; }
+u16 McpTcpServer::port() const { return impl_->bound_port; }
+std::string McpTcpServer::status() const {
+    std::lock_guard lock(impl_->state_mutex);
+    return impl_->state;
 }
 
 }  // namespace aerore

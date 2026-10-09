@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "aerore",
-  "version-semver": "0.2.0",
+  "version-semver": "0.3.0",
   "description": "Native Windows x86/x64 static and dynamic analysis workbench",
   "license": "MIT",
   "builtin-baseline": "0699a19d0c6386247ce50d4dedbb8217d484d536",
@@ -11,6 +11,7 @@
       "features": ["docking-experimental", "dx11-binding", "win32-binding"],
       "platform": "windows"
     },
+    "liblzma",
     "sqlite3",
     "zydis"
   ],

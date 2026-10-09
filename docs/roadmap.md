@@ -10,6 +10,9 @@
 
 ## 0.3 — analysis depth
 
+- Corpus validation for VMProtect legacy and 3.9+ static LZMA reconstruction
+- Tune virtualization/obfuscation repair gates against clean and protected corpora
+
 - Parse x64 exception/unwind data and use it as high-confidence function ranges
 - Recover switch tables with value-range propagation
 - Add tail-call classification and thunk folding

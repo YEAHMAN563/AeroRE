@@ -9,6 +9,14 @@
 
 namespace aerore {
 
+struct DumpAssessment {
+    bool virtualized = false;
+    bool obfuscated = false;
+    int virtualization_score = 0;
+    int obfuscation_score = 0;
+    std::vector<std::string> reasons;
+};
+
 struct UnpackResult {
     bool ok = false;
     int confidence = 0;
@@ -17,7 +25,14 @@ struct UnpackResult {
     u64 oep_rva = 0;
     std::vector<u8> rebuilt;
     std::vector<std::string> lifted;
+    bool static_unpack = false;
+    size_t decompressed_blocks = 0;
+    DumpAssessment assessment;
 };
+
+// Conservative post-unpack classifier used to gate automatic PE rewrites.
+// A positive result means that table fixers must stay report-only.
+DumpAssessment assess_dump(const PeImage& image, Decoder& decoder);
 
 class IUnpacker {
 public:

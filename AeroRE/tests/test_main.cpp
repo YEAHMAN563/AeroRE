@@ -1,8 +1,10 @@
 #include "aerore/database.hpp"
 #include "aerore/decoder.hpp"
 #include "aerore/engine.hpp"
+#include "aerore/exports.hpp"
 #include "aerore/iat.hpp"
 #include "aerore/mcp.hpp"
+#include "aerore/pseudocode.hpp"
 #include "aerore/session.hpp"
 
 #include <cstring>
@@ -165,6 +167,13 @@ void test_analysis_and_db() {
     if (f) {
         CHECK(!f->blocks.empty());
         CHECK(f->name.rfind("sub_", 0) == 0);
+        auto pseudo = aerore::build_pseudocode(*m, *f);
+        CHECK(!pseudo.empty());
+        bool saw_call_preview = false;
+        for (const auto& line : pseudo)
+            if (line.text.find("sub_") != std::string::npos && line.text.find("();") != std::string::npos)
+                saw_call_preview = true;
+        CHECK(saw_call_preview);
     }
 
     session.save_db(dbpath);
@@ -235,6 +244,92 @@ void test_unpack() {
     CHECK(r.oep_rva == 0x2000);
     auto m = session.model();
     CHECK(m->entry == 0x140002000ull);
+    CHECK(session.last_post_unpack().ran);
+    CHECK(session.last_post_unpack().eligible);
+    CHECK(!session.last_post_unpack().assessment.virtualized);
+}
+
+#ifdef AERORE_HAS_LZMA
+void test_static_vmprotect_lzma() {
+    std::vector<aerore::u8> stub = {0xE9, 0xFB, 0xEF, 0xFF, 0xFF};
+    auto file = build_pe(".text", {}, 0x60000020, ".vmp0", stub, 0x60000020, 0x2000, {});
+    auto w32 = [&](size_t offset, uint32_t value) {
+        for (int i = 0; i < 4; ++i) file[offset + i] = static_cast<aerore::u8>(value >> (8 * i));
+    };
+    // The original .text is virtual-only. The VM section holds stock LZMA
+    // properties, one raw block, and a legacy {Src,Dst} PACKER_INFO entry.
+    w32(0x188 + 16, 0);
+    w32(0x188 + 20, 0);
+    const aerore::u8 properties[] = {0x5d, 0x00, 0x00, 0x00, 0x04};
+    std::memcpy(file.data() + 0x620, properties, sizeof(properties));
+    const aerore::u8 compressed[] = {0x00, 0x24, 0x0c, 0x54, 0x0c, 0x38, 0x7d,
+                                     0xff, 0xff, 0xff, 0xfc, 0x20, 0x00, 0x00};
+    std::memcpy(file.data() + 0x640, compressed, sizeof(compressed));
+    w32(0x678, 0x2020);
+    w32(0x680, 0x2040);
+    w32(0x684, 0x1000);
+
+    aerore::Session session;
+    session.load_bytes(file, "static-vmp.exe", false);
+    auto result = session.unpack_best();
+    CHECK(result.ok);
+    CHECK(result.static_unpack);
+    CHECK(result.decompressed_blocks == 1);
+    CHECK(result.oep_rva == 0x1000);
+    const auto bytes = session.read_va(0x140001000ull, 4);
+    CHECK(bytes == std::vector<aerore::u8>({0x48, 0x31, 0xC0, 0xC3}));
+}
+#endif
+
+void test_export_rebuild_and_json() {
+    std::vector<aerore::u8> text = {0x48, 0x31, 0xC0, 0xC3};
+    auto file = build_pe(".text", text, 0x60000020, ".rdata", {'A', 0}, 0x40000040, 0x1000, {});
+    aerore::PeImage image = aerore::PeImage::parse(file);
+    aerore::ExportSym symbol;
+    symbol.name = "AeroEntry";
+    symbol.ordinal = 7;
+    symbol.rva = 0x1000;
+    symbol.va = image.image_base() + symbol.rva;
+    auto report = aerore::fix_exports(image, {symbol}, "sample.dll", true);
+    CHECK(report.patched);
+    auto rebuilt = image.rebuild(false);
+    aerore::PeImage parsed = aerore::PeImage::parse(rebuilt);
+    CHECK(parsed.exports().size() == 1);
+    if (!parsed.exports().empty()) {
+        CHECK(parsed.exports()[0].name == "AeroEntry");
+        CHECK(parsed.exports()[0].ordinal == 7);
+        CHECK(parsed.exports()[0].rva == 0x1000);
+    }
+
+    aerore::Session session;
+    session.load_bytes(file, "sample.dll", false);
+    auto session_report = session.fix_exports({symbol}, true);
+    CHECK(session_report.patched);
+    std::string json = session.symbols_json();
+    CHECK(json.find("aerore.symbols.v1") != std::string::npos);
+    CHECK(json.find("AeroEntry") != std::string::npos);
+    CHECK(json.find("\"imports\"") != std::string::npos);
+    CHECK(json.find("\"exports\"") != std::string::npos);
+}
+
+void test_repair_gate_blocks_virtualized_dump() {
+    auto file = build_pe(".vmp0", {0xC3}, 0xE0000060, ".rdata", {0}, 0x40000040, 0x1000, {});
+    aerore::PeImage image = aerore::PeImage::parse(file);
+    aerore::Decoder decoder(image.arch());
+    auto assessment = aerore::assess_dump(image, decoder);
+    CHECK(assessment.virtualized);
+
+    std::vector<aerore::u8> jump = {0xE9, 0xFB, 0x0F, 0x00, 0x00};
+    auto still_virtualized = build_pe(".vmp0", jump, 0x60000020, ".vmp1", {0xC3}, 0x60000020, 0x1000, {});
+    aerore::Session session;
+    session.load_bytes(still_virtualized, "still-vm.exe", false);
+    auto unpacked = session.unpack_best();
+    CHECK(unpacked.ok);
+    CHECK(session.last_post_unpack().ran);
+    CHECK(!session.last_post_unpack().eligible);
+    CHECK(session.last_post_unpack().assessment.virtualized);
+    CHECK(session.last_post_unpack().iat.message.find("skipped") != std::string::npos);
+    CHECK(session.last_post_unpack().exports.skipped);
 }
 
 void test_mcp() {
@@ -272,6 +367,18 @@ void test_themida_detect() {
     CHECK(score >= 70);
 }
 
+void test_anti_debug_defaults() {
+    aerore::AntiAntiDebug guard;
+    const auto& options = guard.options();
+    CHECK(options.enabled);
+    CHECK(options.patch_peb);
+    CHECK(options.patch_heap);
+    CHECK(options.hook_debug_apis);
+    CHECK(options.block_thread_hide_calls);
+    CHECK(!options.hide_new_threads);
+    CHECK(!options.sanitize_debug_registers);
+}
+
 }  // namespace
 
 int main() {
@@ -279,8 +386,14 @@ int main() {
     test_analysis_and_db();
     test_iat();
     test_unpack();
+#ifdef AERORE_HAS_LZMA
+    test_static_vmprotect_lzma();
+#endif
+    test_export_rebuild_and_json();
+    test_repair_gate_blocks_virtualized_dump();
     test_mcp();
     test_themida_detect();
+    test_anti_debug_defaults();
     if (g_fails) {
         std::cerr << g_fails << " checks failed\n";
         return 1;

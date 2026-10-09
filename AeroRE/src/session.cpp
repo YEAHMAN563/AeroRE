@@ -1,5 +1,7 @@
 #include "aerore/session.hpp"
 
+#include "aerore/json.hpp"
+
 #include <fstream>
 #include <sstream>
 
@@ -63,9 +65,11 @@ void Session::publish_from_image(bool run_analysis) {
 
 void Session::load_bytes(std::vector<u8> bytes, const std::string& label, bool auto_unpack) {
     error_.clear();
+    post_unpack_ = {};
     progress_.post("load", label, 2);
     image_ = std::make_unique<PeImage>(PeImage::parse(std::move(bytes)));
     image_->set_path_hint(label);
+    preserved_exports_ = image_->exports();
     if (auto_unpack) {
         if (IUnpacker* u = unpackers_.best(*image_)) {
             if (u->detect(*image_) >= 60) {
@@ -75,6 +79,9 @@ void Session::load_bytes(std::vector<u8> bytes, const std::string& label, bool a
                 if (r.ok && !r.rebuilt.empty()) {
                     image_ = std::make_unique<PeImage>(PeImage::parse(std::move(r.rebuilt)));
                     image_->set_path_hint(label);
+                    run_post_unpack_repairs(preserved_exports_, r);
+                } else {
+                    error_ = r.log;
                 }
             }
         }
@@ -106,10 +113,73 @@ IatReport Session::fix_iat(const std::vector<ModuleSpan>& modules, bool patch) {
         report.message = "no image loaded";
         return report;
     }
-    report = aerore::fix_iat(*image_, *decoder_, modules, patch);
+    std::vector<ModuleSpan> available = modules.empty() ? debugger_->modules() : modules;
+    report = aerore::fix_iat(*image_, *decoder_, available, patch);
     if (db_) db_->save_iat(report.slots);
-    if (patch && report.patched) publish_from_image(true);
+    if (patch && report.patched) {
+        std::string label = image_->path_hint();
+        image_ = std::make_unique<PeImage>(PeImage::parse(image_->rebuild(false)));
+        image_->set_path_hint(label);
+        publish_from_image(true);
+    }
     return report;
+}
+
+ExportFixReport Session::fix_exports(const std::vector<ExportSym>& candidates, bool patch) {
+    ExportFixReport report;
+    if (!image_) {
+        report.message = "no image loaded";
+        return report;
+    }
+    const auto& source = candidates.empty() ? preserved_exports_ : candidates;
+    report = aerore::fix_exports(*image_, source, image_->path_hint(), patch);
+    if (patch && report.patched) {
+        std::string label = image_->path_hint();
+        image_ = std::make_unique<PeImage>(PeImage::parse(image_->rebuild(false)));
+        image_->set_path_hint(label);
+        publish_from_image(true);
+    }
+    return report;
+}
+
+void Session::run_post_unpack_repairs(const std::vector<ExportSym>& preserved_exports, UnpackResult& result) {
+    post_unpack_ = {};
+    post_unpack_.ran = true;
+    decoder_ = std::make_unique<Decoder>(image_->arch());
+    post_unpack_.assessment = assess_dump(*image_, *decoder_);
+    result.assessment = post_unpack_.assessment;
+
+    std::ostringstream summary;
+    summary << "post-unpack gate: virtualization=" << post_unpack_.assessment.virtualization_score
+            << " obfuscation=" << post_unpack_.assessment.obfuscation_score << "\n";
+    for (const auto& reason : post_unpack_.assessment.reasons) summary << "  " << reason << "\n";
+
+    if (post_unpack_.assessment.virtualized || post_unpack_.assessment.obfuscated) {
+        post_unpack_.iat.message = "automatic IAT repair skipped: dump remains virtualized or obfuscated";
+        post_unpack_.exports.skipped = true;
+        post_unpack_.exports.message = "automatic export repair skipped: dump remains virtualized or obfuscated";
+        summary << post_unpack_.iat.message << "\n" << post_unpack_.exports.message << "\n";
+    } else {
+        post_unpack_.eligible = true;
+        progress_.post("repair", "automatic IAT reconstruction", 96);
+        post_unpack_.iat = aerore::fix_iat(*image_, *decoder_, debugger_->modules(), true);
+        if (db_) db_->save_iat(post_unpack_.iat.slots);
+        progress_.post("repair", "automatic export reconstruction", 98);
+        post_unpack_.exports = aerore::fix_exports(*image_, preserved_exports, image_->path_hint(), true);
+        summary << "IAT: " << post_unpack_.iat.message << "\n";
+        summary << "exports: " << post_unpack_.exports.message << "\n";
+
+        if (post_unpack_.iat.patched || post_unpack_.exports.patched) {
+            std::string label = image_->path_hint();
+            image_ = std::make_unique<PeImage>(PeImage::parse(image_->rebuild(false)));
+            image_->set_path_hint(label);
+            decoder_ = std::make_unique<Decoder>(image_->arch());
+        }
+    }
+    post_unpack_.summary = summary.str();
+    result.log += post_unpack_.summary;
+    result.rebuilt = image_->rebuild(false);
+    error_ = result.log;
 }
 
 UnpackResult Session::unpack_best() {
@@ -123,15 +193,60 @@ UnpackResult Session::unpack_best() {
         result.log = "no unpacker scored high enough";
         return result;
     }
+    const std::vector<ExportSym> preserved = image_->exports();
+    preserved_exports_ = preserved;
     result = u->unpack(*image_, progress_);
     error_ = result.log;
     if (result.ok && !result.rebuilt.empty()) {
         std::string label = image_->path_hint();
         image_ = std::make_unique<PeImage>(PeImage::parse(result.rebuilt));
         image_->set_path_hint(label);
+        run_post_unpack_repairs(preserved, result);
         publish_from_image(true);
     }
     return result;
+}
+
+std::string Session::symbols_json() const {
+    auto snap = model();
+    if (!snap) throw std::runtime_error("no image loaded");
+    Json root = Json::object();
+    root.set("schema", Json::string("aerore.symbols.v1"));
+    root.set("image", Json::string(snap->image_path));
+    root.set("imageBase", Json::string(hex(snap->image_base)));
+    root.set("architecture", Json::string(snap->is64 ? "x64" : "x86"));
+
+    Json imports = Json::array();
+    for (const auto& symbol : snap->imports) {
+        Json item = Json::object();
+        item.set("dll", Json::string(symbol.dll));
+        item.set("name", Json::string(symbol.name));
+        item.set("ordinal", Json::number_u64(symbol.ordinal));
+        item.set("iatVa", Json::string(hex(symbol.iat_va)));
+        imports.arr.push_back(std::move(item));
+    }
+    root.set("imports", std::move(imports));
+
+    Json exports = Json::array();
+    for (const auto& symbol : snap->exports) {
+        Json item = Json::object();
+        item.set("name", Json::string(symbol.name));
+        item.set("ordinal", Json::number_u64(symbol.ordinal));
+        item.set("rva", Json::string(hex(symbol.rva)));
+        item.set("va", Json::string(hex(symbol.va)));
+        exports.arr.push_back(std::move(item));
+    }
+    root.set("exports", std::move(exports));
+    return root.dump();
+}
+
+void Session::export_symbols_json(const std::string& path) const {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) throw std::runtime_error("cannot create " + path);
+    const std::string json = symbols_json();
+    out.write(json.data(), static_cast<std::streamsize>(json.size()));
+    out.put('\n');
+    if (!out) throw std::runtime_error("failed to write " + path);
 }
 
 std::string Session::query(const std::string& sql) {

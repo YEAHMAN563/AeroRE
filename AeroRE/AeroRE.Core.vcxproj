@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32"><Configuration>Debug</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32"><Configuration>Release</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{0A808239-21CF-4E3C-9B6E-5A4F0E6286D7}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>AeroRECore</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <VcpkgEnableManifest>true</VcpkgEnableManifest>
+    <VcpkgManifestInstall>true</VcpkgManifestInstall>
+    <VcpkgManifestRoot>$(SolutionDir)</VcpkgManifestRoot>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType><UseDebugLibraries>true</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType><UseDebugLibraries>false</UseDebugLibraries><PlatformToolset>v143</PlatformToolset><WholeProgramOptimization>true</WholeProgramOptimization><CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)build\vs\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)build\vs\obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>AeroRE.Core</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel><SDLCheck>true</SDLCheck><ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard><ExceptionHandling>Sync</ExceptionHandling><MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>AERORE_HAS_ZYDIS=1;AERORE_HAS_LZMA=1;AERORE_HAS_IMGUI=1;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="include\aerore\anti_debug.hpp" />
+    <ClInclude Include="include\aerore\database.hpp" />
+    <ClInclude Include="include\aerore\debugger.hpp" />
+    <ClInclude Include="include\aerore\decoder.hpp" />
+    <ClInclude Include="include\aerore\emu.hpp" />
+    <ClInclude Include="include\aerore\engine.hpp" />
+    <ClInclude Include="include\aerore\exports.hpp" />
+    <ClInclude Include="include\aerore\iat.hpp" />
+    <ClInclude Include="include\aerore\json.hpp" />
+    <ClInclude Include="include\aerore\mcp.hpp" />
+    <ClInclude Include="include\aerore\model.hpp" />
+    <ClInclude Include="include\aerore\pe.hpp" />
+    <ClInclude Include="include\aerore\pool.hpp" />
+    <ClInclude Include="include\aerore\pseudocode.hpp" />
+    <ClInclude Include="include\aerore\session.hpp" />
+    <ClInclude Include="include\aerore\types.hpp" />
+    <ClInclude Include="include\aerore\ui.hpp" />
+    <ClInclude Include="include\aerore\unpack.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\anti_debug.cpp" />
+    <ClCompile Include="src\database.cpp" />
+    <ClCompile Include="src\debugger.cpp" />
+    <ClCompile Include="src\decoder.cpp" />
+    <ClCompile Include="src\emu.cpp" />
+    <ClCompile Include="src\engine.cpp" />
+    <ClCompile Include="src\exports.cpp" />
+    <ClCompile Include="src\iat.cpp" />
+    <ClCompile Include="src\json.cpp" />
+    <ClCompile Include="src\mcp.cpp" />
+    <ClCompile Include="src\model.cpp" />
+    <ClCompile Include="src\pe.cpp" />
+    <ClCompile Include="src\pseudocode.cpp" />
+    <ClCompile Include="src\session.cpp" />
+    <ClCompile Include="src\ui.cpp" />
+    <ClCompile Include="src\unpack.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

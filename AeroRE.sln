@@ -1,0 +1,47 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "AeroRE.Core", "AeroRE\AeroRE.Core.vcxproj", "{0A808239-21CF-4E3C-9B6E-5A4F0E6286D7}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "AeroRE", "AeroRE\AeroRE.vcxproj", "{6838C1F1-DC37-407A-BEAB-62B54D63A691}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "AeroRE.Tests", "AeroRE\AeroRE.Tests.vcxproj", "{73E06F49-1396-4D83-BB55-3915E3607032}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|Win32
+		Release|x64 = Release|x64
+		Release|x86 = Release|Win32
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{0A808239-21CF-4E3C-9B6E-5A4F0E6286D7}.Debug|x64.ActiveCfg = Debug|x64
+		{0A808239-21CF-4E3C-9B6E-5A4F0E6286D7}.Debug|x64.Build.0 = Debug|x64
+		{0A808239-21CF-4E3C-9B6E-5A4F0E6286D7}.Debug|x86.ActiveCfg = Debug|Win32
+		{0A808239-21CF-4E3C-9B6E-5A4F0E6286D7}.Debug|x86.Build.0 = Debug|Win32
+		{0A808239-21CF-4E3C-9B6E-5A4F0E6286D7}.Release|x64.ActiveCfg = Release|x64
+		{0A808239-21CF-4E3C-9B6E-5A4F0E6286D7}.Release|x64.Build.0 = Release|x64
+		{0A808239-21CF-4E3C-9B6E-5A4F0E6286D7}.Release|x86.ActiveCfg = Release|Win32
+		{0A808239-21CF-4E3C-9B6E-5A4F0E6286D7}.Release|x86.Build.0 = Release|Win32
+		{6838C1F1-DC37-407A-BEAB-62B54D63A691}.Debug|x64.ActiveCfg = Debug|x64
+		{6838C1F1-DC37-407A-BEAB-62B54D63A691}.Debug|x64.Build.0 = Debug|x64
+		{6838C1F1-DC37-407A-BEAB-62B54D63A691}.Debug|x86.ActiveCfg = Debug|Win32
+		{6838C1F1-DC37-407A-BEAB-62B54D63A691}.Debug|x86.Build.0 = Debug|Win32
+		{6838C1F1-DC37-407A-BEAB-62B54D63A691}.Release|x64.ActiveCfg = Release|x64
+		{6838C1F1-DC37-407A-BEAB-62B54D63A691}.Release|x64.Build.0 = Release|x64
+		{6838C1F1-DC37-407A-BEAB-62B54D63A691}.Release|x86.ActiveCfg = Release|Win32
+		{6838C1F1-DC37-407A-BEAB-62B54D63A691}.Release|x86.Build.0 = Release|Win32
+		{73E06F49-1396-4D83-BB55-3915E3607032}.Debug|x64.ActiveCfg = Debug|x64
+		{73E06F49-1396-4D83-BB55-3915E3607032}.Debug|x64.Build.0 = Debug|x64
+		{73E06F49-1396-4D83-BB55-3915E3607032}.Debug|x86.ActiveCfg = Debug|Win32
+		{73E06F49-1396-4D83-BB55-3915E3607032}.Debug|x86.Build.0 = Debug|Win32
+		{73E06F49-1396-4D83-BB55-3915E3607032}.Release|x64.ActiveCfg = Release|x64
+		{73E06F49-1396-4D83-BB55-3915E3607032}.Release|x64.Build.0 = Release|x64
+		{73E06F49-1396-4D83-BB55-3915E3607032}.Release|x86.ActiveCfg = Release|Win32
+		{73E06F49-1396-4D83-BB55-3915E3607032}.Release|x86.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

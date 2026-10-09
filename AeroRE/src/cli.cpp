@@ -21,11 +21,12 @@ bool flag(int argc, char** argv, const char* key) {
 
 void usage() {
     std::cerr
-        << "aerore analyze <file> [-o idb] [--unpack]\n"
+        << "aerore analyze <file> [-o idb] [--no-unpack]\n"
         << "aerore info <file>\n"
         << "aerore disasm <file> --va 0x140001000 [--count 40]\n"
         << "aerore fix-iat <file> --modules mods.json [--patch] [-o out.exe]\n"
         << "aerore unpack <file> [-o out.exe]\n"
+        << "aerore export-symbols <file> -o symbols.json [--no-unpack]\n"
         << "aerore mcp\n"
         << "aerore gui [file]\n"
         << "aerore query <idb> <sql>\n";
@@ -73,7 +74,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (cmd == "analyze") {
-            bool unpack = flag(argc, argv, "--unpack");
+            bool unpack = !flag(argc, argv, "--no-unpack");
             session.load_file(file, unpack);
             auto m = session.model();
             auto st = session.last_stats();
@@ -102,6 +103,17 @@ int main(int argc, char** argv) {
                 std::cout << aerore::hex(it->second.va) << "  " << it->second.text << "\n";
                 va += it->second.len ? it->second.len : 1;
             }
+            return 0;
+        }
+        if (cmd == "export-symbols") {
+            const char* out = arg(argc, argv, "-o");
+            if (!out) {
+                usage();
+                return 1;
+            }
+            session.load_file(file, !flag(argc, argv, "--no-unpack"));
+            session.export_symbols_json(out);
+            std::cout << "exported imports and exports to " << out << "\n";
             return 0;
         }
         if (cmd == "unpack") {

@@ -37,8 +37,18 @@ bool Debugger::write_reg(const std::string&, u64) { return false; }
 std::vector<u8> Debugger::read_mem(u64, size_t) const { return {}; }
 bool Debugger::write_mem(u64, const std::vector<u8>&) { return false; }
 std::vector<ModuleSpan> Debugger::modules() const { return {}; }
+void Debugger::set_anti_debug_options(const AntiAntiDebugOptions&) {}
+const AntiAntiDebugOptions& Debugger::anti_debug_options() const {
+    static const AntiAntiDebugOptions options;
+    return options;
+}
+bool Debugger::load_anti_debug_config(const std::string&) { return false; }
+bool Debugger::save_anti_debug_config(const std::string&) const { return false; }
+bool Debugger::anti_debug_active() const { return false; }
+std::vector<std::string> Debugger::anti_debug_log() { return {}; }
 std::optional<DebugEvent> Debugger::poll() { return std::nullopt; }
 bool Debugger::alive() const { return false; }
+bool Debugger::paused() const { return false; }
 
 #else
 
@@ -51,12 +61,17 @@ struct Debugger::Impl {
     bool continue_pending = false;
     bool rearm_after_step = false;
     u64 rearm_va = 0;
+    u64 rearm_memory_id = 0;
     bool step_pause = false;
+    bool initial_breakpoint = true;
+    bool pause_requested = false;
     u64 temp_bp = 0;
+    DWORD pending_status = DBG_CONTINUE;
     std::vector<Breakpoint> bps;
     std::unordered_map<u64, BpCondition> conds;
     std::vector<DebugEvent> queue;
     u64 next_id = 1;
+    AntiAntiDebug anti;
 
     Breakpoint* find_va(u64 va) {
         for (auto& b : bps)
@@ -76,9 +91,11 @@ struct Debugger::Impl {
     bool write(u64 va, const void* src, size_t n) const {
         SIZE_T got = 0;
         DWORD old = 0;
-        VirtualProtectEx(process, reinterpret_cast<LPVOID>(va), n, PAGE_EXECUTE_READWRITE, &old);
+        if (!VirtualProtectEx(process, reinterpret_cast<LPVOID>(va), n, PAGE_EXECUTE_READWRITE, &old)) return false;
         BOOL ok = WriteProcessMemory(process, reinterpret_cast<LPVOID>(va), src, n, &got);
-        VirtualProtectEx(process, reinterpret_cast<LPVOID>(va), n, old, &old);
+        DWORD ignored = 0;
+        VirtualProtectEx(process, reinterpret_cast<LPVOID>(va), n, old, &ignored);
+        FlushInstructionCache(process, reinterpret_cast<LPCVOID>(va), n);
         return ok && got == n;
     }
 
@@ -94,12 +111,19 @@ struct Debugger::Impl {
         ctx.ContextFlags = CONTEXT_ALL;
         if (GetThreadContext(th, &ctx)) {
             rs.valid = true;
+#if defined(_WIN64)
             rs.rip = ctx.Rip;
             rs.rflags = ctx.EFlags;
             rs.gpr[0] = ctx.Rax; rs.gpr[1] = ctx.Rcx; rs.gpr[2] = ctx.Rdx; rs.gpr[3] = ctx.Rbx;
             rs.gpr[4] = ctx.Rsp; rs.gpr[5] = ctx.Rbp; rs.gpr[6] = ctx.Rsi; rs.gpr[7] = ctx.Rdi;
             rs.gpr[8] = ctx.R8; rs.gpr[9] = ctx.R9; rs.gpr[10] = ctx.R10; rs.gpr[11] = ctx.R11;
             rs.gpr[12] = ctx.R12; rs.gpr[13] = ctx.R13; rs.gpr[14] = ctx.R14; rs.gpr[15] = ctx.R15;
+#else
+            rs.rip = ctx.Eip;
+            rs.rflags = ctx.EFlags;
+            rs.gpr[0] = ctx.Eax; rs.gpr[1] = ctx.Ecx; rs.gpr[2] = ctx.Edx; rs.gpr[3] = ctx.Ebx;
+            rs.gpr[4] = ctx.Esp; rs.gpr[5] = ctx.Ebp; rs.gpr[6] = ctx.Esi; rs.gpr[7] = ctx.Edi;
+#endif
         }
         CloseHandle(th);
         return rs;
@@ -119,17 +143,44 @@ struct Debugger::Impl {
         return ok;
     }
 
-    void arm_software(Breakpoint& bp) {
+    bool arm_software(Breakpoint& bp) {
         u8 cur = 0;
-        if (!read(bp.va, &cur, 1)) return;
-        if (cur == 0xCC) return;
+        if (!read(bp.va, &cur, 1)) return false;
         bp.saved = cur;
+        if (cur == 0xCC) return true;
         u8 cc = 0xCC;
-        write(bp.va, &cc, 1);
+        return write(bp.va, &cc, 1);
     }
 
     void disarm_software(Breakpoint& bp) {
         write(bp.va, &bp.saved, 1);
+    }
+
+    bool arm_memory(Breakpoint& bp) {
+        SYSTEM_INFO system{};
+        GetSystemInfo(&system);
+        const u64 page = bp.va & ~(static_cast<u64>(system.dwPageSize) - 1);
+        DWORD old = 0;
+        DWORD protect = bp.old_protect;
+        if (!protect) {
+            MEMORY_BASIC_INFORMATION region{};
+            if (!VirtualQueryEx(process, reinterpret_cast<LPCVOID>(bp.va), &region, sizeof(region))) return false;
+            protect = region.Protect;
+        }
+        if (!VirtualProtectEx(process, reinterpret_cast<LPVOID>(page), system.dwPageSize,
+                              protect | PAGE_GUARD, &old))
+            return false;
+        if (!bp.old_protect) bp.old_protect = old;
+        return true;
+    }
+
+    void disarm_memory(const Breakpoint& bp) {
+        if (!bp.old_protect) return;
+        SYSTEM_INFO system{};
+        GetSystemInfo(&system);
+        const u64 page = bp.va & ~(static_cast<u64>(system.dwPageSize) - 1);
+        DWORD ignored = 0;
+        VirtualProtectEx(process, reinterpret_cast<LPVOID>(page), system.dwPageSize, bp.old_protect, &ignored);
     }
 
     int alloc_dr() {
@@ -146,7 +197,11 @@ struct Debugger::Impl {
             ctx.Dr0 = ctx.Dr1 = ctx.Dr2 = ctx.Dr3 = 0;
             ctx.Dr6 = 0;
             ctx.Dr7 = 0;
+#if defined(_WIN64)
             DWORD64* drs[4] = {&ctx.Dr0, &ctx.Dr1, &ctx.Dr2, &ctx.Dr3};
+#else
+            DWORD* drs[4] = {&ctx.Dr0, &ctx.Dr1, &ctx.Dr2, &ctx.Dr3};
+#endif
             for (const auto& b : bps) {
                 if (b.hw_index < 0 || b.hw_index > 3 || !b.enabled) continue;
                 *drs[b.hw_index] = b.va;
@@ -154,28 +209,55 @@ struct Debugger::Impl {
                 unsigned rw = 0;
                 if (b.type == BpType::HardwareWrite) rw = 1;
                 else if (b.type == BpType::HardwareReadWrite) rw = 3;
-                ctx.Dr7 |= static_cast<DWORD64>(rw) << (16 + b.hw_index * 4);
+                ctx.Dr7 |= static_cast<decltype(ctx.Dr7)>(rw) << (16 + b.hw_index * 4);
             }
         });
+    }
+
+    Breakpoint* triggered_hardware() {
+        HANDLE thread = open_thread();
+        if (!thread) return nullptr;
+        CONTEXT context{};
+        context.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        DWORD_PTR dr6 = 0;
+        if (GetThreadContext(thread, &context)) {
+            dr6 = static_cast<DWORD_PTR>(context.Dr6);
+            context.Dr6 = 0;
+            SetThreadContext(thread, &context);
+        }
+        CloseHandle(thread);
+        for (auto& bp : bps)
+            if (bp.enabled && bp.hw_index >= 0 && bp.hw_index < 4 && (dr6 & (1ull << bp.hw_index))) return &bp;
+        return nullptr;
     }
 
     void push_event(std::string kind, u64 va, std::string msg) {
         queue.push_back(DebugEvent{std::move(kind), va, pid, tid, std::move(msg)});
     }
 
-    bool handle(const DEBUG_EVENT& ev) {
+    bool handle(const DEBUG_EVENT& ev, DWORD& continuation) {
+        continuation = DBG_CONTINUE;
         tid = ev.dwThreadId;
         if (ev.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT) {
+            if (!anti.active()) anti.attach(process, pid);
+            anti.on_thread(tid);
+            if (ev.u.CreateProcessInfo.hFile) CloseHandle(ev.u.CreateProcessInfo.hFile);
             push_event("create", reinterpret_cast<u64>(ev.u.CreateProcessInfo.lpBaseOfImage), "process created");
+            return false;
+        }
+        if (ev.dwDebugEventCode == CREATE_THREAD_DEBUG_EVENT) {
+            anti.on_thread(tid);
             return false;
         }
         if (ev.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT) {
             alive = false;
-            paused = true;
+            paused = false;
             push_event("exit", ev.u.ExitProcess.dwExitCode, "process exited");
-            return true;
+            return false;
         }
         if (ev.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT) {
+            anti.on_module(reinterpret_cast<u64>(ev.u.LoadDll.lpBaseOfDll));
+            if (ev.u.LoadDll.hFile) CloseHandle(ev.u.LoadDll.hFile);
             push_event("dll", reinterpret_cast<u64>(ev.u.LoadDll.lpBaseOfDll), "dll loaded");
             return false;
         }
@@ -183,22 +265,51 @@ struct Debugger::Impl {
         const auto& ex = ev.u.Exception.ExceptionRecord;
         DWORD code = ex.ExceptionCode;
         u64 addr = reinterpret_cast<u64>(ex.ExceptionAddress);
+        if (anti.neutralize_exception(code)) {
+            push_event("conceal", addr, "anti-debug exception neutralized");
+            return false;
+        }
         if (code == EXCEPTION_BREAKPOINT) {
             RegState rs = read_regs();
             u64 rip = rs.valid ? rs.rip : addr;
             Breakpoint* bp = find_va(addr);
             if (!bp && rip) bp = find_va(rip > 0 ? rip - 1 : rip);
-            if (!bp) return false;
+            if (!bp) {
+                if (pause_requested) {
+                    pause_requested = false;
+                    paused = true;
+                    push_event("pause", addr, "manual pause");
+                    return true;
+                }
+                if (initial_breakpoint) {
+                    initial_breakpoint = false;
+                    paused = true;
+                    push_event("breakpoint", addr, "system breakpoint");
+                    return true;
+                }
+                continuation = DBG_EXCEPTION_NOT_HANDLED;
+                return false;
+            }
             u64 at = bp->va;
-            if (rs.valid && rs.rip == at + 1) write_ctx([&](CONTEXT& ctx) { ctx.Rip = at; });
+            const u64 breakpoint_id = bp->id;
+            const bool temporary = temp_bp && at == temp_bp && breakpoint_id == 0;
+            if (rs.valid && rs.rip == at + 1) write_ctx([&](CONTEXT& ctx) {
+#if defined(_WIN64)
+                ctx.Rip = at;
+#else
+                ctx.Eip = static_cast<DWORD>(at);
+#endif
+            });
             if (bp->type == BpType::Software) disarm_software(*bp);
-            rearm_after_step = true;
-            rearm_va = at;
-            if (temp_bp && at == temp_bp) {
+            if (temporary) {
                 remove_temp();
+            } else {
+                rearm_after_step = true;
+                rearm_va = at;
+                write_ctx([&](CONTEXT& ctx) { ctx.EFlags |= 0x100; });
             }
             RegState now = read_regs();
-            auto cit = conds.find(bp->id);
+            auto cit = conds.find(breakpoint_id);
             if (cit != conds.end() && cit->second && !cit->second(now)) {
                 write_ctx([&](CONTEXT& ctx) { ctx.EFlags |= 0x100; });
                 return false;
@@ -213,6 +324,10 @@ struct Debugger::Impl {
                     if (bp->type == BpType::Software) arm_software(*bp);
                 rearm_after_step = false;
             }
+            if (rearm_memory_id) {
+                if (Breakpoint* bp = find_id(rearm_memory_id)) arm_memory(*bp);
+                rearm_memory_id = 0;
+            }
             if (step_pause) {
                 step_pause = false;
                 paused = true;
@@ -220,21 +335,37 @@ struct Debugger::Impl {
                 push_event("step", rs.rip, "single step");
                 return true;
             }
-            RegState rs = read_regs();
-            for (const auto& b : bps) {
-                if (b.hw_index < 0) continue;
+            if (Breakpoint* bp = triggered_hardware()) {
                 paused = true;
-                push_event("breakpoint", b.va, "hardware");
+                push_event("breakpoint", bp->va, "hardware");
                 return true;
             }
-            (void)rs;
             return false;
         }
         if (code == EXCEPTION_GUARD_PAGE || code == STATUS_GUARD_PAGE_VIOLATION) {
+            const u64 accessed = ex.NumberParameters > 1 ? static_cast<u64>(ex.ExceptionInformation[1]) : addr;
+            SYSTEM_INFO system{};
+            GetSystemInfo(&system);
+            bool matched = false;
+            for (const auto& bp : bps) {
+                if (bp.type != BpType::Memory || !bp.enabled) continue;
+                const u64 page = bp.va & ~(static_cast<u64>(system.dwPageSize) - 1);
+                if (accessed >= page && accessed < page + system.dwPageSize) {
+                    rearm_memory_id = bp.id;
+                    write_ctx([&](CONTEXT& ctx) { ctx.EFlags |= 0x100; });
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) {
+                continuation = DBG_EXCEPTION_NOT_HANDLED;
+                return false;
+            }
             paused = true;
-            push_event("breakpoint", addr, "guard page");
+            push_event("breakpoint", accessed, "guard page");
             return true;
         }
+        continuation = DBG_EXCEPTION_NOT_HANDLED;
         return false;
     }
 
@@ -250,17 +381,67 @@ struct Debugger::Impl {
         temp_bp = 0;
     }
 
-    bool pump() {
+    std::optional<bool> pump_once(DWORD timeout_ms) {
+        if (!alive || paused) return std::nullopt;
+        DEBUG_EVENT ev{};
+        if (!WaitForDebugEvent(&ev, timeout_ms)) return std::nullopt;
+        pid = ev.dwProcessId;
+        anti.after_debug_event(ev.dwThreadId);
+        DWORD continuation = DBG_CONTINUE;
+        const bool stop = handle(ev, continuation);
+        if (!stop) {
+            anti.before_continue(ev.dwThreadId);
+            ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, continuation);
+        } else {
+            pending_status = continuation;
+            continue_pending = true;
+        }
+        return stop;
+    }
+
+    bool pump_until_stop() {
         while (alive && !paused) {
-            DEBUG_EVENT ev{};
-            if (!WaitForDebugEvent(&ev, 200)) continue;
-            pid = ev.dwProcessId;
-            bool stop = handle(ev);
-            if (!stop) ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE);
-            else continue_pending = true;
-            if (stop) return true;
+            auto result = pump_once(200);
+            if (result && *result) return true;
         }
         return paused;
+    }
+
+    void pump_available() {
+        // poll() is called once per UI frame. The batch limit prevents a
+        // debug-event storm from monopolizing rendering.
+        for (int i = 0; i < 64 && alive && !paused; ++i) {
+            auto result = pump_once(0);
+            if (!result || *result) break;
+        }
+    }
+
+    void restore_breakpoints() {
+        for (auto& bp : bps) {
+            if (bp.type == BpType::Software) disarm_software(bp);
+            else if (bp.type == BpType::Memory) disarm_memory(bp);
+        }
+        bps.clear();
+        conds.clear();
+        if (process && tid) apply_dr();
+        temp_bp = 0;
+        rearm_va = 0;
+        rearm_memory_id = 0;
+        rearm_after_step = false;
+    }
+
+    void reset_runtime() {
+        paused = false;
+        continue_pending = false;
+        rearm_after_step = false;
+        rearm_va = 0;
+        rearm_memory_id = 0;
+        step_pause = false;
+        initial_breakpoint = true;
+        pause_requested = false;
+        temp_bp = 0;
+        pending_status = DBG_CONTINUE;
+        queue.clear();
     }
 
     bool go(bool trap) {
@@ -270,18 +451,22 @@ struct Debugger::Impl {
             write_ctx([&](CONTEXT& ctx) { ctx.EFlags |= 0x100; });
         }
         if (continue_pending) {
-            ContinueDebugEvent(pid, tid, DBG_CONTINUE);
+            anti.before_continue(tid);
+            ContinueDebugEvent(pid, tid, pending_status);
             continue_pending = false;
         }
+        pause_requested = false;
         paused = false;
-        return pump();
+        return true;
     }
 };
 
-Debugger::Debugger() : impl_(std::make_unique<Impl>()) {}
+Debugger::Debugger() : impl_(std::make_unique<Impl>()) { impl_->anti.load_ini("aerore-hide.ini"); }
 Debugger::~Debugger() { detach(); }
 
 bool Debugger::create(const std::string& path, const std::string& args) {
+    if (impl_->alive || impl_->process) detach();
+    impl_->reset_runtime();
     std::string cmd = "\"" + path + "\"";
     if (!args.empty()) cmd += " " + args;
     std::vector<char> buf(cmd.begin(), cmd.end());
@@ -300,10 +485,12 @@ bool Debugger::create(const std::string& path, const std::string& args) {
     impl_->alive = true;
     CloseHandle(pi.hThread);
     impl_->paused = false;
-    return impl_->pump();
+    return impl_->pump_until_stop();
 }
 
 bool Debugger::attach(u32 pid) {
+    if (impl_->alive || impl_->process) detach();
+    impl_->reset_runtime();
     if (!DebugActiveProcess(pid)) {
         error_ = "DebugActiveProcess failed";
         return false;
@@ -311,25 +498,36 @@ bool Debugger::attach(u32 pid) {
     DebugSetProcessKillOnExit(FALSE);
     impl_->pid = pid;
     impl_->process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+    if (!impl_->process) {
+        DebugActiveProcessStop(pid);
+        error_ = "OpenProcess failed";
+        return false;
+    }
     impl_->alive = true;
     impl_->paused = false;
-    return impl_->pump();
+    return impl_->pump_until_stop();
 }
 
 void Debugger::detach() {
     if (!impl_->alive && !impl_->process) return;
+    impl_->restore_breakpoints();
+    impl_->anti.detach();
     if (impl_->continue_pending) ContinueDebugEvent(impl_->pid, impl_->tid, DBG_CONTINUE);
     DebugActiveProcessStop(impl_->pid);
     if (impl_->process) CloseHandle(impl_->process);
     impl_->process = nullptr;
     impl_->alive = false;
-    impl_->paused = false;
+    impl_->reset_runtime();
 }
 
 bool Debugger::pause() {
     if (!impl_->alive) return false;
-    DebugBreakProcess(impl_->process);
-    return impl_->pump();
+    impl_->pause_requested = true;
+    if (!DebugBreakProcess(impl_->process)) {
+        impl_->pause_requested = false;
+        return false;
+    }
+    return true;
 }
 bool Debugger::resume() { return impl_->go(false); }
 bool Debugger::step_into() { return impl_->go(true); }
@@ -339,7 +537,11 @@ bool Debugger::step_over() {
     if (!rs.valid) return step_into();
     u8 buf[15]{};
     if (!impl_->read(rs.rip, buf, sizeof(buf))) return step_into();
+#if defined(_WIN64)
     Decoder dec(Arch::X64);
+#else
+    Decoder dec(Arch::X86);
+#endif
     auto in = dec.decode(rs.rip, buf, sizeof(buf));
     if (in && in->flow == Flow::Call) return run_to(rs.rip + in->len);
     return step_into();
@@ -349,7 +551,13 @@ bool Debugger::step_out() {
     RegState rs = regs();
     if (!rs.valid) return false;
     u64 ret = 0;
+#if defined(_WIN64)
     if (!impl_->read(rs.gpr[4], &ret, 8)) return false;
+#else
+    u32 ret32 = 0;
+    if (!impl_->read(rs.gpr[4], &ret32, 4)) return false;
+    ret = ret32;
+#endif
     return run_to(ret);
 }
 
@@ -358,7 +566,10 @@ bool Debugger::run_to(u64 va) {
     bp.id = 0;
     bp.va = va;
     bp.type = BpType::Software;
-    impl_->arm_software(bp);
+    if (!impl_->arm_software(bp)) {
+        error_ = "failed to arm temporary software breakpoint";
+        return false;
+    }
     impl_->bps.push_back(bp);
     impl_->temp_bp = va;
     return impl_->go(false);
@@ -376,14 +587,12 @@ u64 Debugger::add_bp(u64 va, BpType type, int size, std::string condition) {
     bp.size = size;
     bp.condition = std::move(condition);
     if (type == BpType::Software) {
-        impl_->arm_software(bp);
+        if (!impl_->arm_software(bp)) {
+            error_ = "failed to arm software breakpoint";
+            return 0;
+        }
     } else if (type == BpType::Memory) {
-        SYSTEM_INFO si{};
-        GetSystemInfo(&si);
-        u64 page = va & ~(static_cast<u64>(si.dwPageSize) - 1);
-        DWORD old = 0;
-        if (!VirtualProtectEx(impl_->process, reinterpret_cast<LPVOID>(page), si.dwPageSize, PAGE_READWRITE | PAGE_GUARD,
-                              &old)) {
+        if (!impl_->arm_memory(bp)) {
             error_ = "VirtualProtectEx failed";
             return 0;
         }
@@ -405,6 +614,7 @@ bool Debugger::remove_bp(u64 id) {
     auto it = std::find_if(impl_->bps.begin(), impl_->bps.end(), [&](const Breakpoint& b) { return b.id == id; });
     if (it == impl_->bps.end()) return false;
     if (it->type == BpType::Software) impl_->disarm_software(*it);
+    if (it->type == BpType::Memory) impl_->disarm_memory(*it);
     bool hw = it->hw_index >= 0;
     impl_->bps.erase(it);
     if (hw) impl_->apply_dr();
@@ -419,19 +629,39 @@ bool Debugger::write_reg(const std::string& name, u64 value) {
     int idx = -1;
     static const char* names[] = {"rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi",
                                    "r8","r9","r10","r11","r12","r13","r14","r15"};
+    static const char* names32[] = {"eax","ecx","edx","ebx","esp","ebp","esi","edi"};
     for (int i = 0; i < 16; ++i)
         if (name == names[i]) idx = i;
-    if (name == "rip") {
-        return impl_->write_ctx([&](CONTEXT& ctx) { ctx.Rip = value; });
+    for (int i = 0; i < 8; ++i)
+        if (name == names32[i]) idx = i;
+    if (name == "rip" || name == "eip") {
+        return impl_->write_ctx([&](CONTEXT& ctx) {
+#if defined(_WIN64)
+            ctx.Rip = value;
+#else
+            ctx.Eip = static_cast<DWORD>(value);
+#endif
+        });
     }
     if (idx < 0) {
         error_ = "unknown register";
         return false;
     }
+#if !defined(_WIN64)
+    if (idx >= 8) {
+        error_ = "register is unavailable in an x86 debugger build";
+        return false;
+    }
+#endif
     return impl_->write_ctx([&](CONTEXT& ctx) {
+#if defined(_WIN64)
         DWORD64* gprs[] = {&ctx.Rax,&ctx.Rcx,&ctx.Rdx,&ctx.Rbx,&ctx.Rsp,&ctx.Rbp,&ctx.Rsi,&ctx.Rdi,
                            &ctx.R8,&ctx.R9,&ctx.R10,&ctx.R11,&ctx.R12,&ctx.R13,&ctx.R14,&ctx.R15};
         *gprs[idx] = value;
+#else
+        DWORD* gprs[] = {&ctx.Eax,&ctx.Ecx,&ctx.Edx,&ctx.Ebx,&ctx.Esp,&ctx.Ebp,&ctx.Esi,&ctx.Edi};
+        if (idx < 8) *gprs[idx] = static_cast<DWORD>(value);
+#endif
     });
 }
 
@@ -521,7 +751,15 @@ std::vector<ModuleSpan> Debugger::modules() const {
     return mods;
 }
 
+void Debugger::set_anti_debug_options(const AntiAntiDebugOptions& options) { impl_->anti.set_options(options); }
+const AntiAntiDebugOptions& Debugger::anti_debug_options() const { return impl_->anti.options(); }
+bool Debugger::load_anti_debug_config(const std::string& path) { return impl_->anti.load_ini(path); }
+bool Debugger::save_anti_debug_config(const std::string& path) const { return impl_->anti.save_ini(path); }
+bool Debugger::anti_debug_active() const { return impl_->anti.active(); }
+std::vector<std::string> Debugger::anti_debug_log() { return impl_->anti.drain_log(); }
+
 std::optional<DebugEvent> Debugger::poll() {
+    impl_->pump_available();
     if (impl_->queue.empty()) return std::nullopt;
     DebugEvent ev = impl_->queue.front();
     impl_->queue.erase(impl_->queue.begin());
@@ -529,6 +767,7 @@ std::optional<DebugEvent> Debugger::poll() {
 }
 
 bool Debugger::alive() const { return impl_->alive; }
+bool Debugger::paused() const { return impl_->alive && impl_->paused; }
 
 #endif
 

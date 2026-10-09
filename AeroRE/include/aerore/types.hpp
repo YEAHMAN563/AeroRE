@@ -232,6 +232,13 @@ struct IatReport {
     std::string message;
 };
 
+struct ExportFixReport {
+    std::vector<ExportSym> entries;
+    bool patched = false;
+    bool skipped = false;
+    std::string message;
+};
+
 struct ModuleExport {
     std::string name;
     u16 ordinal = 0;

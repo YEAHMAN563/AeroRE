@@ -1,5 +1,6 @@
 #pragma once
 
+#include "aerore/anti_debug.hpp"
 #include "aerore/iat.hpp"
 #include "aerore/types.hpp"
 
@@ -17,6 +18,7 @@ struct Breakpoint {
     int size = 1;
     int hw_index = -1;
     u8 saved = 0;
+    u32 old_protect = 0;
     bool enabled = true;
     std::string condition;
 };
@@ -70,8 +72,15 @@ public:
     bool write_mem(u64 va, const std::vector<u8>& data);
 
     std::vector<ModuleSpan> modules() const;
+    void set_anti_debug_options(const AntiAntiDebugOptions& options);
+    const AntiAntiDebugOptions& anti_debug_options() const;
+    bool load_anti_debug_config(const std::string& path);
+    bool save_anti_debug_config(const std::string& path) const;
+    bool anti_debug_active() const;
+    std::vector<std::string> anti_debug_log();
     std::optional<DebugEvent> poll();
     bool alive() const;
+    bool paused() const;
     const std::string& last_error() const { return error_; }
 
 private:
